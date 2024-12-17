@@ -14,7 +14,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/wdamien/findl.git"
+        "url": "https://github.com/gskinnerTeam/findl"
     },
     "dependencies": {
         "@octokit/rest": "^18.12.0",

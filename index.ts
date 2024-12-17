@@ -181,7 +181,7 @@ const processPubspecQueue = async (queueItem: QueueItem, cb: () => void) => {
 
     if (queueItem.repositoryURL?.indexOf('http') !== 0) {
         pubspecFile = await fetch(`https://pub.dev/api/packages/${queueItem.name}`)
-            .then((response) => response.json() as PromiseLike<PubspecFile | PubspecFileError>)
+            .then((response) => response.json().catch(e => ({error: 'Invalid JSON'})) as PromiseLike<PubspecFile | PubspecFileError>)
             .then((json) => {
                 if ('error' in json) {
                     return null;
