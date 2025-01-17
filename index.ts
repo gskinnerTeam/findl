@@ -21,6 +21,10 @@ import {URL} from 'url';
 const IgnoreFileName = '.findlignore';
 const result: QueueItem[] = [];
 
+// Cache the licenses, so we don't have to keep hitting the API.
+// Only used for dart / flutter to accommodate how flutter nests its packages.
+const dartLicenseCache = new Map<string, {license?: string, licenseUrl?: string}>();
+
 let verbose: boolean = false;
 let progressBar: cliProgress.SingleBar | Pick<cliProgress.SingleBar, 'start' | 'stop' | 'update'>;
 let cwd: string = process.cwd();
@@ -149,11 +153,10 @@ const getRepoLicense = async (repo: string) => {
             try {
                 const lastSlash = repoPath.lastIndexOf('/');
                 const repoName = repoPath.substring(lastSlash+1);
-                const owner = repoPath.substr(0, lastSlash);
+                const owner = repoPath.substring(0, lastSlash);
                 const licenseResult = await octokit.rest.licenses.getForRepo({owner, repo: repoName}).catch(e => {
                     return e;
                 });
-
                 const licenseResultJSON = licenseResult?.data;
                 if ('message' in licenseResult) {
                     const message = licenseResult.message;
@@ -176,10 +179,17 @@ const getRepoLicense = async (repo: string) => {
     return { license, licenseUrl };
 };
 
+// Flutter nests a bunch of core packages, that don't have their own pub.dev page. So we have to manually set them to flutter.
+const isFlutterRepo = (queueItem: QueueItem) => {
+    return ['flutter_localizations', 'flutter_test', 'flutter', 'flutter_web_plugins'].some((p) => p === queueItem.repositoryURL);
+};
+
 const processPubspecQueue = async (queueItem: QueueItem, cb: () => void) => {
     let pubspecFile: PubspecFile | null = null;
 
-    if (queueItem.repositoryURL?.indexOf('http') !== 0) {
+    if (isFlutterRepo(queueItem)) {
+        queueItem.repositoryURL = 'https://github.com/flutter/flutter/';
+    } else if (queueItem.repositoryURL?.indexOf('http') !== 0) {
         pubspecFile = await fetch(`https://pub.dev/api/packages/${queueItem.name}`)
             .then((response) => response.json().catch(e => ({error: 'Invalid JSON'})) as PromiseLike<PubspecFile | PubspecFileError>)
             .then((json) => {
@@ -188,8 +198,6 @@ const processPubspecQueue = async (queueItem: QueueItem, cb: () => void) => {
                 }
                 return json;
             });
-    } else if (queueItem.repositoryURL === 'flutter') {
-        queueItem.repositoryURL = 'https://github.com/flutter/flutter/';
     }
 
     const pubspec = pubspecFile?.latest.pubspec;
@@ -201,20 +209,27 @@ const processPubspecQueue = async (queueItem: QueueItem, cb: () => void) => {
     }
 
     if (queueItem.repositoryURL) {
-        const licenseData = await getRepoLicense(queueItem.repositoryURL);
-        queueItem.license = licenseData.license ?? undefined;
-        queueItem.licenseUrl = licenseData.licenseUrl ?? queueItem.licenseUrl ?? null;
-
-        // The API never gave us a URL, so look for one.
-        if (!queueItem.licenseUrl) {
-            for (let i = 0; i < LicenseFileNames.length; i++) {
-                const license = LicenseFileNames[i];
-                if (await validateLicenseURL(queueItem, license)) {
-                    break;
-                }
-            }
+        // We've already checked this repo, so re-use the license.
+        if (dartLicenseCache.has(queueItem.repositoryURL)) {
+            const cachedLicense = dartLicenseCache.get(queueItem.repositoryURL);
+            queueItem.license = cachedLicense?.license ?? '';
+            queueItem.licenseUrl = cachedLicense?.licenseUrl ?? '';
         } else {
-            queueItem.licenseUrlIsValid = true;
+            const licenseData = await getRepoLicense(queueItem.repositoryURL);
+            queueItem.license = licenseData?.license ?? undefined;
+            queueItem.licenseUrl = licenseData?.licenseUrl ?? queueItem.licenseUrl ?? null;
+            // The API never gave us a URL, so look for one.
+            if (!queueItem.licenseUrl) {
+                for (let i = 0; i < LicenseFileNames.length; i++) {
+                    const license = LicenseFileNames[i];
+                    if (await validateLicenseURL(queueItem, license)) {
+                        break;
+                    }
+                }
+            } else {
+                queueItem.licenseUrlIsValid = true;
+                dartLicenseCache.set(queueItem.repositoryURL, {license: queueItem.license, licenseUrl: queueItem.licenseUrl});
+            }
         }
     }
     
